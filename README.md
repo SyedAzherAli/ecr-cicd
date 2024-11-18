@@ -1,70 +1,155 @@
-# Getting Started with Create React App
+# ECR CICD
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+# Create Resources using Terraform script
 
-## Available Scripts
+Creates an EKS cluster with one worker node and Jenkins server 
 
-In the project directory, you can run:
+NOTE: replace with your key pair name in [variable.tf](http://variable.tf) file
 
-### `npm start`
+## JENKINS CONFIGURATON
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+### Login to the serve
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+and install docker, aws cli
 
-### `npm test`
+```yaml
+sudo apt update -y 
+sudo apt install docker.io -y
+sudo usermod -aG docker jenkins 
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+```
 
-### `npm run build`
+### Login to jenkins user
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+```yaml
+# install aws cli 
+sudo apt install unzip -y 
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+# configure aws 
+aws configure 
+# Enter your access key and secret key 
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+# Insatll kubectl version 1.31
+curl -O https://s3.us-west-2.amazonaws.com/amazon-eks/1.31.0/2024-09-12/bin/linux/amd64/kubectl
+chmod +x ./kubectl
+mkdir -p $HOME/bin && cp ./kubectl $HOME/bin/kubectl && export PATH=$HOME/bin:$PATH
+echo 'export PATH=$HOME/bin:$PATH' >> ~/.bashrc
+```
 
-### `npm run eject`
+reboot the instance 
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+### Add k8s config file
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+on your local mechine connect to kubernetes api using aws cli 
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+```yaml
+aws eks update-kubeconfig --region ap-south-1 --name <eks_cluster_name>
+```
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+now your have acces to your cluster
 
-## Learn More
+### create a jenkins creadential
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+kind: secret file 
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+now selete the file, path: /home/$USER/.kube/config
 
-### Code Splitting
+ID: k8sconfig ( name should be same in script ) 
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+### plugins to install
 
-### Analyzing the Bundle Size
+1. **Git Plugin**:
+    - **Description**: This plugin allows Jenkins to clone repositories from Git, including GitHub.
+    - **Installation**: Go to **Manage Jenkins** > **Manage Plugins** > **Available** tab, search for "Git Plugin", and install it.
+2. **Docker Pipeline**:
+    - **Description**: This plugin provides support for Docker in Jenkins pipelines, allowing you to build and publish Docker images.
+    - **Installation**: Search for "Docker Pipeline" in the **Available** tab and install it.
+3. **Kubernetes CLI Plugin**:
+    - **Description**: This plugin integrates Kubernetes with Jenkins, allowing you to run **`kubectl`** commands directly from your pipeline.
+    - **Installation**: Search for "Kubernetes CLI Plugin" in the **Available** tab and install it.
+4. **Environment Injector Plugin** :
+    - **Description**: This plugin allows you to inject environment variables into the build process, which can be useful for dynamic configurations.
+    - **Installation**: Search for "Environment Injector Plugin" in the **Available** tab and install it.
+5. **AWS Steps (haven’t use in script)**:
+    - **Description**: This plugin provides steps for interacting with AWS services, including ECR.
+    - **Installation**: Search for "AWS Steps" in the **Available** tab and install it.
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+### Jenkisnfile
 
-### Making a Progressive Web App
+```groovy
+pipeline {
+    agent any 
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+    environment {
+        AWS_ACCOUNT_ID = ""
+        AWS_REGION = "ap-south-1"
+        GIT_REPO = 'https://github.com/SyedAzherAli/ecr-cicd.git'
+        IMAGE_NAME = "ecr-cicd-test"
+        IMAGE_TAG = "latest"
+        REPOSITORY_URL = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+        K8S_CLUSTER_NAME = "my_first_cluster"
+    }
 
-### Advanced Configuration
+    stages {
+        stage("Cleanup Workspace and Docker Images") {
+            steps {
+                cleanWs() // Built-in Jenkins method to clean workspace
+                sh '''
+                # Remove dangling images to prevent unnecessary storage issues
+                docker rmi -f $(docker images -f "dangling=true" -q) || echo "No dangling images to remove."
+                '''
+            }
+        }
+        stage("Checkout Source Code") {
+            steps {
+                git branch: "main", url: "${GIT_REPO}"
+            }
+        }
+        stage("Build Docker Image") {
+            steps {
+                script {
+                    dockerImage = docker.build("${IMAGE_NAME}:${IMAGE_TAG}")
+                }
+            }
+        }
+        stage("Login to AWS ECR") {
+            steps {
+                script {
+                    sh '''
+                    aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${REPOSITORY_URL}
+                    '''
+                }
+            }
+        }
+        stage("Push Docker Image to ECR") {
+            steps {
+                script {
+                    sh '''
+                    docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${REPOSITORY_URL}/${IMAGE_NAME}:${IMAGE_TAG}
+                    docker push ${REPOSITORY_URL}/${IMAGE_NAME}:${IMAGE_TAG}
+                    '''
+                }
+            }
+        }
+        stage("Deploy to Kubernetes") {
+            steps {
+                withKubeConfig([credentialsId: 'k8sconfig']) {
+                    sh '''
+                    # Ensure the secret is created or skipped if it already exists
+                    ../../kubectl create secret generic my-registry-key \
+                        --from-file=.dockerconfigjson=/var/lib/jenkins/.docker/config.json \
+                        --type=kubernetes.io/dockerconfigjson || echo "Secret already exists, skipping creation."
+                    
+                    # Apply Kubernetes manifests
+                    ../../kubectl apply -f react-dep-sev.yaml
+                    '''
+                }
+            }
+        }
+    }
+}
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
-
-### Deployment
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+```
