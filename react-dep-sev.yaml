@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment 
+metadata: 
+  name: react-app
+  labels:
+    app: react
+spec:
+  replicas: 2
+  selector: 
+    matchLabels: 
+      app: react
+  template:
+    metadata:
+      labels:
+        app: react
+    spec:
+      imagePullSecrets:
+      - name: my-registry-key 
+      containers: 
+      - name: react-app
+        image: 654654355718.dkr.ecr.ap-south-1.amazonaws.com/test01-repo:latest
+        imagePullPolicy: Always    
+        ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata: 
+  name: react-service
+  labels: 
+    app: react
+spec:
+  ports:
+    - port: 80
+      targetPort: 80
+  selector: 
+    app: react
+  type: LoadBalancer
